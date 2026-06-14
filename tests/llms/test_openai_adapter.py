@@ -1,12 +1,17 @@
 """Tests for llms.adapters.openai — payload building and SSE parsing."""
 
+import asyncio
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
 
 from omnigent.llms.adapters.openai import (
     OpenAIAdapter,
     OpenAICompatibleAdapter,
     _parse_sse_line,
 )
+from omnigent.llms.types import ResponseTextDeltaEvent
 
 # ── Payload building ─────────────────────────────────────
 
@@ -159,11 +164,6 @@ def test_stream_request_aread_called_before_raise_for_status() -> None:
     has been reverted and bad-model 404s will again show
     ``"<unreadable response body>"``.
     """
-    import asyncio
-    from unittest.mock import AsyncMock, MagicMock, patch
-
-    import httpx
-
     adapter = OpenAICompatibleAdapter(base_url="https://fake-host/v1", api_key_env=None)
 
     aread_called = False
@@ -235,13 +235,6 @@ def test_stream_responses_decodes_utf8_split_across_chunks() -> None:
     reintroduced and non-ASCII streamed output (accents, CJK, emoji) is being
     silently corrupted.
     """
-    import asyncio
-    from unittest.mock import AsyncMock, MagicMock, patch
-
-    import httpx
-
-    from omnigent.llms.types import ResponseTextDeltaEvent
-
     adapter = OpenAIAdapter(base_url="https://fake-host/v1")
 
     # SSE for one text delta containing 'é', split mid-character.

@@ -12867,12 +12867,18 @@ async def _create_session_from_existing_agent(
             if user_id is not None:
                 _salt = f"{_install_id}:{user_id}" if _install_id else user_id
                 _anon_uid = _hashlib.sha256(_salt.encode()).hexdigest()[:16]
+            _client_header = request.headers.get("x-omnigent-client")
+            _surface = (
+                _client_header
+                if _client_header in ("web", "desktop", "ios", "android", "cli")
+                else _classify_surface(request.headers.get("user-agent"))
+            )
             _tel_emit(
                 _TelSessionCreatedEvent(
                     session_id=conv.id,
                     agent_id=agent.id,
                     harness=native_agent.harness if native_agent is not None else None,
-                    surface=_classify_surface(request.headers.get("user-agent")),
+                    surface=_surface,
                     installation_id=_install_id,
                     anon_user_id=_anon_uid,
                     is_fork=body.parent_session_id is not None,

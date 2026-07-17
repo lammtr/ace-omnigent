@@ -10964,20 +10964,21 @@ def _manage_acp_agent(slug: str) -> None:
 
 
 def _manage_hermes_harness() -> None:
-    """Run the level-2 loop for Hermes: ensure the CLI is installed.
+    """Run the level-2 loop for Hermes: install the CLI, then configure it.
 
     Hermes owns its own auth via ``hermes model`` (interactive provider/model
     picker) and is installed via a curl script from Nous Research — Omnigent
-    stores no Hermes credential. A missing CLI gates the drill-in; when
-    installed, the drill-in offers to launch ``hermes model`` for provider
-    configuration.
+    stores no Hermes credential. A missing CLI offers to run the vendor
+    installer; when installed, the drill-in offers to launch ``hermes model``
+    for provider configuration.
 
-    :returns: None. Side effects: may launch ``hermes model``.
+    :returns: None. Side effects: may install Hermes or launch ``hermes model``.
     """
     from omnigent.onboarding.harness_install import (
         HERMES_KEY,
         harness_cli_installed,
         harness_install_spec,
+        install_harness_cli,
     )
     from omnigent.onboarding.interactive import console, select
 
@@ -10988,11 +10989,36 @@ def _manage_hermes_harness() -> None:
             if spec and spec.install_hint
             else "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
         )
-        console.print(
-            f"  Hermes isn't installed. Install it with:\n    [bold]{hint}[/bold]\n"
-            "  then re-open this menu."
+        choice = select(
+            "Hermes isn't installed. Install it now?",
+            [
+                f"Yes — install ({hint})",
+                "No — back to harnesses",
+                "I'll run it myself (show the command)",
+            ],
+            descriptions=[
+                f"Runs `{hint}`.",
+                "Return to the harness picker without installing.",
+                "Print the command so you can install it yourself, then return.",
+            ],
+            default=0,
+            clear_on_exit=True,
         )
-        return
+        if choice == 0:
+            console.print(f"  [dim]Installing Hermes — running `{hint}`…[/dim]")
+            if install_harness_cli(HERMES_KEY):
+                console.print("  [green]✓ Hermes installed[/green]")
+            else:
+                console.print(
+                    f"  [red]Install failed.[/red] Run it manually, then re-open: "
+                    f"[bold]{hint}[/bold]"
+                )
+                return
+        elif choice == 2:
+            console.print(f"  Install Hermes with:\n    [bold]{hint}[/bold]")
+            return
+        else:
+            return
 
     status: str | None = None
     while True:

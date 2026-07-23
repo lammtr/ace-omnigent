@@ -1351,6 +1351,106 @@ def test_parse_inline_mcp_databricks_only_skipped(tmp_path: Path) -> None:
     assert spec.mcp_servers == []
 
 
+def test_parse_inline_mcp_sigv4_auth(tmp_path: Path) -> None:
+    """
+    ``auth: {type: sigv4, profile, service, region}`` on an inline MCP
+    server parses into MCPServerConfig.aws_profile/aws_service/aws_region.
+
+    Failure means the sigv4 auth block is silently dropped and the
+    connection would go out unsigned, which AWS IAM will reject as an
+    opaque 4xx with no indication the YAML was misread.
+    """
+    config = {
+        "spec_version": 1,
+        "name": "sigv4-agent",
+        "tools": {
+            "ace-peg": {
+                "type": "mcp",
+                "url": "https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations",
+                "auth": {
+                    "type": "sigv4",
+                    "profile": "default",
+                    "service": "bedrock-agentcore",
+                    "region": "ap-southeast-2",
+                },
+            }
+        },
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+    spec = parse(tmp_path)
+
+    assert len(spec.mcp_servers) == 1
+    server = spec.mcp_servers[0]
+    assert server.name == "ace-peg"
+    assert server.aws_profile == "default"
+    assert server.aws_service == "bedrock-agentcore"
+    assert server.aws_region == "ap-southeast-2"
+
+
+def test_parse_inline_mcp_sigv4_auth_region_optional(tmp_path: Path) -> None:
+    """``region`` is optional on the sigv4 auth block; aws_region stays None."""
+    config = {
+        "spec_version": 1,
+        "name": "sigv4-agent-no-region",
+        "tools": {
+            "ace-peg": {
+                "type": "mcp",
+                "url": "https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations",
+                "auth": {
+                    "type": "sigv4",
+                    "profile": "default",
+                    "service": "bedrock-agentcore",
+                },
+            }
+        },
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+    spec = parse(tmp_path)
+
+    server = spec.mcp_servers[0]
+    assert server.aws_profile == "default"
+    assert server.aws_service == "bedrock-agentcore"
+    assert server.aws_region is None
+
+
+def test_parse_inline_mcp_sigv4_auth_missing_profile_raises(tmp_path: Path) -> None:
+    """Missing ``profile`` on a sigv4 auth block raises OmnigentError."""
+    config = {
+        "spec_version": 1,
+        "name": "sigv4-agent-bad",
+        "tools": {
+            "ace-peg": {
+                "type": "mcp",
+                "url": "https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations",
+                "auth": {"type": "sigv4", "service": "bedrock-agentcore"},
+            }
+        },
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    with pytest.raises(OmnigentError, match=r"sigv4.*requires.*profile.*service"):
+        parse(tmp_path)
+
+
+def test_parse_inline_mcp_sigv4_auth_missing_service_raises(tmp_path: Path) -> None:
+    """Missing ``service`` on a sigv4 auth block raises OmnigentError."""
+    config = {
+        "spec_version": 1,
+        "name": "sigv4-agent-bad",
+        "tools": {
+            "ace-peg": {
+                "type": "mcp",
+                "url": "https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations",
+                "auth": {"type": "sigv4", "profile": "default"},
+            }
+        },
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    with pytest.raises(OmnigentError, match=r"sigv4.*requires.*profile.*service"):
+        parse(tmp_path)
+
+
 def test_parse_inline_mcp_headers_and_env_expanded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

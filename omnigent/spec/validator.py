@@ -284,8 +284,9 @@ def _validate_mcp_servers(spec: AgentSpec, result: ValidationResult) -> None:
 
     Per-transport field rules:
 
-    - ``transport == "http"``: ``url`` is required; ``command``,
-      ``args``, ``env`` must not be populated.
+    - ``transport == "http"``: one of ``url`` or ``aws_ssm_parameter``
+      is required; ``command``, ``args``, ``env`` must not be
+      populated.
     - ``transport == "stdio"``: ``command`` is required; ``url``
       must not be populated and ``headers`` must be empty. ``args``
       and ``env`` are optional.
@@ -306,8 +307,8 @@ def _validate_mcp_servers(spec: AgentSpec, result: ValidationResult) -> None:
             result.add(f"{prefix}.name", f"duplicate MCP server name: {mcp.name!r}")
         seen_names.add(mcp.name)
         if mcp.transport == "http":
-            if mcp.url is None:
-                result.add(f"{prefix}.url", "required when transport is 'http'")
+            if mcp.url is None and mcp.aws_ssm_parameter is None:
+                result.add(f"{prefix}.url", "url or ssm_parameter required when transport is 'http'")
             if mcp.command is not None:
                 result.add(f"{prefix}.command", "not allowed when transport is 'http'")
             if mcp.args:

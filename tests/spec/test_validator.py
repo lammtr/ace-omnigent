@@ -544,6 +544,29 @@ def test_mcp_http_without_url_invalid() -> None:
     assert any("required when transport is 'http'" in e.message for e in result.errors)
 
 
+def test_mcp_http_with_ssm_parameter_valid() -> None:
+    """
+    Validator accepts an HTTP MCP that resolves its URL from AWS
+    SSM (``aws_ssm_parameter`` set, ``url=None``) instead of a
+    literal ``url``. This is the shape ``_parse_http_mcp_server``
+    produces for an ``ssm_parameter``-configured server, and it
+    must not trip the "url required" check.
+    """
+    spec = _minimal_spec(
+        mcp_servers=[
+            MCPServerConfig(
+                name="ace-marshall",
+                transport="http",
+                url=None,
+                aws_ssm_parameter="/ace/agentcore/ace-marshall/runtime-arn",
+                aws_profile="ace-agentcore",
+            )
+        ]
+    )
+    result = validate(spec)
+    assert result.valid
+
+
 def test_mcp_http_with_stdio_field_invalid() -> None:
     """
     Validator rejects HTTP MCP that has a stdio-only field

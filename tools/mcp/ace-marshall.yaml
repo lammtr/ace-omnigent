@@ -1,10 +1,5 @@
 # The Marshall — Bedrock AgentCore Runtime, IAM/SigV4-authed.
 #
-# NOTE: `ssm_parameter` is not implemented yet — this file depends on the
-# design in docs/superpowers/specs/2026-07-23-mcp-ssm-url-resolution-design.md.
-# Until that ships, connect() will fail parsing (`ssm_parameter` is not a
-# recognized field). Once shipped, this file works as-is.
-#
 # Before connecting, make sure the `default` AWS profile is fresh:
 #   aws-azure-login --mode cli --profile default
 

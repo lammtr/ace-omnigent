@@ -914,6 +914,11 @@ class MCPServerConfig:
         ``"bedrock-agentcore"``. Required when ``aws_profile`` is set.
     :param aws_region: AWS region for signing. Optional — falls back to
         the profile's configured region when unset.
+    :param aws_ssm_parameter: AWS SSM Parameter Store path holding a
+        runtime ARN, e.g. ``"/ace/poc/ace-os/marshall/runtime/url"``.
+        When set, the connection URL is resolved from this parameter
+        instead of ``url`` — mutually exclusive with it. Requires
+        ``aws_profile`` to be set.
     :param command: Executable to spawn, e.g. ``"npx"``. Required
         when ``transport == "stdio"``; invalid for ``"http"``.
     :param args: Arguments to pass to *command*, e.g.
@@ -954,6 +959,14 @@ class MCPServerConfig:
     aws_profile: str | None = None
     aws_service: str | None = None  # e.g. "bedrock-agentcore"; no default — require explicit
     aws_region: str | None = None  # optional; falls back to the profile's configured region
+    # AWS SSM Parameter Store path holding the runtime ARN to connect to
+    # (e.g. a Bedrock AgentCore runtime). Mutually exclusive with url.
+    # Requires aws_profile to be set (the same profile used for SigV4
+    # signing) — there's no separate credential concept just for the SSM
+    # lookup. Resolved fresh on every connect/reconnect, not per request:
+    # unlike SigV4 credentials, a runtime ARN doesn't rotate on a timer,
+    # only on redeploy.
+    aws_ssm_parameter: str | None = None
     # Stdio-only fields.
     command: str | None = None
     args: list[str] = field(default_factory=list)
@@ -987,7 +1000,7 @@ class MCPServerConfig:
             f"url={self.url!r}, headers={redacted_headers!r}, "
             f"databricks_profile={self.databricks_profile!r}, "
             f"aws_profile={self.aws_profile!r}, aws_service={self.aws_service!r}, "
-            f"aws_region={self.aws_region!r}, "
+            f"aws_region={self.aws_region!r}, aws_ssm_parameter={self.aws_ssm_parameter!r}, "
             f"command={self.command!r}, args={self.args!r}, "
             f"env={redacted_env!r}, "
             f"timeout={self.timeout!r}, retry={self.retry!r})"

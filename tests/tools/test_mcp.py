@@ -429,6 +429,20 @@ def test_mcp_server_config_repr_includes_sigv4_fields() -> None:
     assert "aws_region='ap-southeast-2'" in r
 
 
+def test_mcp_server_config_repr_includes_ssm_parameter() -> None:
+    """
+    MCPServerConfig.__repr__ includes aws_ssm_parameter un-redacted — it's
+    a parameter path, not a secret, same treatment as aws_profile.
+    """
+    config = MCPServerConfig(
+        name="ssm-svc",
+        aws_ssm_parameter="/ace/poc/ace-os/marshall/runtime/url",
+    )
+    r = repr(config)
+
+    assert "aws_ssm_parameter='/ace/poc/ace-os/marshall/runtime/url'" in r
+
+
 # ── _normalize_input_schema ───────────────────────────────
 
 

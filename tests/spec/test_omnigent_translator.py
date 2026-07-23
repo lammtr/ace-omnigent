@@ -260,6 +260,34 @@ def test_mcp_server_rejected_with_clear_message(
     assert getattr(agent_def.tools["github"], "url", None) == "https://mcp.example.com/sse"
 
 
+def test_mcp_server_with_ssm_parameter_rejected_with_accurate_message(
+    basic_spec: AgentSpec,
+) -> None:
+    """
+    An MCP server configured via ``aws_ssm_parameter`` (no static
+    ``url``) is a valid spec per the validator, but this
+    inner-harness translation path can't resolve the SSM parameter
+    into a URL, so it fails loud — with a message blaming its own
+    missing feature, not the validator.
+
+    **What breaks if this fails**: an operator using
+    ``aws_ssm_parameter`` with the omnigent-native harness sees a
+    message claiming the validator has a bug, wasting time chasing
+    a validator issue that doesn't exist.
+    """
+    basic_spec.mcp_servers = [
+        MCPServerConfig(
+            name="github",
+            transport="http",
+            url=None,
+            aws_ssm_parameter="/omnigent/mcp/github-url",
+        ),
+    ]
+    with pytest.raises(OmnigentError, match=r"aws_ssm_parameter") as exc_info:
+        agent_spec_to_agent_def(basic_spec)
+    assert "validator should have rejected" not in str(exc_info.value)
+
+
 def test_tool_with_filesystem_path_rejected(
     basic_spec: AgentSpec,
 ) -> None:

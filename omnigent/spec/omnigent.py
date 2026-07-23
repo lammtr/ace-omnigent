@@ -380,15 +380,22 @@ def _mcp_server_to_mcp_tool(config: MCPServerConfig) -> MCPTool:
     - ``transport == "http"`` → ``MCPTool(url=..., headers=...)``.
 
     The spec validator rejects mixed-transport fields upstream, so
-    the required-field check per branch here is a belt-and-
-    suspenders for programmatic paths that bypass validation.
+    the ``stdio`` required-field check here is a belt-and-suspenders
+    for programmatic paths that bypass validation. The ``http``
+    branch, however, requires a static ``url`` even though the
+    validator also accepts ``aws_ssm_parameter`` as an alternative:
+    this inner-harness translation path has no support for
+    resolving an SSM-parameter URL, so it fails loud rather than
+    silently dropping the MCP server.
 
     :param config: The native :class:`MCPServerConfig` to invert.
     :returns: An :class:`MCPTool` with the equivalent transport
         shape for the inner omnigent runtime.
-    :raises OmnigentError: If the config is missing the
-        required field for its declared transport (a programmatic
-        construction path that bypassed the validator).
+    :raises OmnigentError: If the config is missing ``command`` for
+        ``stdio`` (a programmatic construction path that bypassed
+        the validator), or missing a static ``url`` for ``http``
+        (a valid ``aws_ssm_parameter``-only config that this
+        translation path can't support).
     """
     if config.transport == "stdio":
         if config.command is None:
@@ -405,8 +412,12 @@ def _mcp_server_to_mcp_tool(config: MCPServerConfig) -> MCPTool:
         )
     if config.url is None:
         raise OmnigentError(
-            f"MCP server {config.name!r} transport='http' but url is None; "
-            f"validator should have rejected this upstream",
+            f"MCP server {config.name!r} transport='http' has no static url "
+            f"(likely configured via aws_ssm_parameter) — this inner-harness "
+            f"translation path only supports a static url, not AWS SSM-resolved "
+            f"URLs. Use an external harness (the runner's McpServerConnection) "
+            f"for aws_ssm_parameter MCP servers, or set a static url for this "
+            f"harness",
             code=ErrorCode.INVALID_INPUT,
         )
     return MCPTool(

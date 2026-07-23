@@ -408,6 +408,26 @@ def test_mcp_server_config_repr_empty_headers() -> None:
     assert "[REDACTED]" not in r
 
 
+def test_mcp_server_config_repr_includes_sigv4_fields() -> None:
+    """
+    MCPServerConfig.__repr__ includes aws_profile/aws_service/aws_region
+    un-redacted (they're names, not secrets — same treatment as
+    databricks_profile).
+    """
+    config = MCPServerConfig(
+        name="sigv4-svc",
+        url="https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations",
+        aws_profile="default",
+        aws_service="bedrock-agentcore",
+        aws_region="ap-southeast-2",
+    )
+    r = repr(config)
+
+    assert "aws_profile='default'" in r
+    assert "aws_service='bedrock-agentcore'" in r
+    assert "aws_region='ap-southeast-2'" in r
+
+
 # ── _normalize_input_schema ───────────────────────────────
 
 

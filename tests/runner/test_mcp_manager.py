@@ -472,6 +472,28 @@ def test_compute_server_hash_changes_with_aws_profile() -> None:
     assert compute_server_hash(base) != compute_server_hash(different_profile)
 
 
+def test_compute_server_hash_changes_with_aws_ssm_parameter() -> None:
+    """
+    compute_server_hash must reflect aws_ssm_parameter — otherwise
+    pointing a running server at a different SSM parameter wouldn't
+    trigger a reconnect, mirroring the aws_profile hash-coverage fix.
+    """
+    base = MCPServerConfig(
+        name="ssm-svc",
+        aws_ssm_parameter="/ace/poc/ace-os/marshall/runtime/url",
+        aws_profile="default",
+        aws_service="bedrock-agentcore",
+    )
+    different_param = MCPServerConfig(
+        name="ssm-svc",
+        aws_ssm_parameter="/ace/poc/modules/other/runtime/url",
+        aws_profile="default",
+        aws_service="bedrock-agentcore",
+    )
+
+    assert compute_server_hash(base) != compute_server_hash(different_param)
+
+
 @pytest.mark.asyncio
 async def test_call_tool_against_failed_server_raises(
     patch_connection: dict[str, Any],

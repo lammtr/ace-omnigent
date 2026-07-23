@@ -2498,11 +2498,13 @@ def _parse_http_mcp_server(
     """
     Parse an HTTP (SSE) MCP server YAML into an :class:`MCPServerConfig`.
 
-    HTTP transport requires ``url``; ``headers`` is optional and
-    expanded via :func:`expand_env_vars` when *expand_env* is True.
-    Stdio-only fields (``command``, ``args``, ``env``, ``sandbox``)
-    are rejected loud — mixing transports silently would hide bugs
-    in the YAML.
+    HTTP transport requires exactly one of ``url`` or ``ssm_parameter``;
+    ``headers`` is optional and expanded via :func:`expand_env_vars` when
+    *expand_env* is True. An optional ``auth:`` block (``databricks`` or
+    ``sigv4``) is parsed via :func:`_parse_mcp_auth_block` — see that
+    function for the shared validation rules. Stdio-only fields
+    (``command``, ``args``, ``env``, ``sandbox``) are rejected loud —
+    mixing transports silently would hide bugs in the YAML.
 
     :param name: The ``name`` field from the YAML (already validated
         non-None by the caller), e.g. ``"github"``.
@@ -2513,8 +2515,9 @@ def _parse_http_mcp_server(
         ``headers``.
     :returns: A fully populated :class:`MCPServerConfig` with
         ``transport == "http"``.
-    :raises OmnigentError: If ``url`` is missing or a stdio-only
-        field was supplied.
+    :raises OmnigentError: If both or neither of ``url``/``ssm_parameter``
+        are given, ``ssm_parameter`` is given without sigv4 ``auth``, the
+        ``auth`` block is malformed, or a stdio-only field was supplied.
     """
     _reject_wrong_transport_keys(
         name,
@@ -2524,19 +2527,41 @@ def _parse_http_mcp_server(
         transport_name="http",
     )
     url = raw.get("url")
-    if url is None:
+    ssm_parameter = raw.get("ssm_parameter")
+    if url is not None and ssm_parameter is not None:
         raise OmnigentError(
-            f"MCP server {name!r} missing required field 'url': {yaml_file}",
+            f"MCP server {name!r} must specify exactly one of 'url' or "
+            f"'ssm_parameter', not both: {yaml_file}",
+            code=ErrorCode.INVALID_INPUT,
+        )
+    if url is None and ssm_parameter is None:
+        raise OmnigentError(
+            f"MCP server {name!r} missing required field 'url' or 'ssm_parameter': {yaml_file}",
+            code=ErrorCode.INVALID_INPUT,
+        )
+    raw_auth = raw.get("auth")
+    databricks_profile, aws_profile, aws_service, aws_region = _parse_mcp_auth_block(
+        raw_auth, f"MCP server {name!r}", f": {yaml_file}"
+    )
+    if ssm_parameter is not None and aws_profile is None:
+        raise OmnigentError(
+            f"MCP server {name!r} 'ssm_parameter' requires auth: {{type: sigv4, "
+            f"profile: ...}} to resolve via AWS SSM: {yaml_file}",
             code=ErrorCode.INVALID_INPUT,
         )
     return MCPServerConfig(
         name=str(name),
         transport="http",
-        url=str(url),
+        url=str(url) if url is not None else None,
+        aws_ssm_parameter=str(ssm_parameter) if ssm_parameter is not None else None,
         headers=(
             expand_env_vars(raw.get("headers", {})) if expand_env else raw.get("headers", {})
         ),
         description=raw.get("description"),
+        databricks_profile=databricks_profile,
+        aws_profile=aws_profile,
+        aws_service=aws_service,
+        aws_region=aws_region,
         timeout=(
             _parse_int_field(raw["timeout"], f"MCP server {name!r}.timeout")
             if "timeout" in raw

@@ -1657,6 +1657,139 @@ def test_parse_inline_and_bundle_mcp_combined(tmp_path: Path) -> None:
     assert names == {"bundle_srv", "inline_mcp"}
 
 
+def _write_bundle_mcp_yaml(tmp_path: Path, filename: str, content: dict) -> None:
+    """Write one tools/mcp/<filename> bundle-file MCP server config."""
+    mcp_dir = tmp_path / "tools" / "mcp"
+    mcp_dir.mkdir(parents=True, exist_ok=True)
+    (mcp_dir / filename).write_text(yaml.dump(content))
+    (tmp_path / "config.yaml").write_text(yaml.dump({"spec_version": 1, "name": "bundle-test"}))
+
+
+def test_discover_mcp_bundle_file_parses_databricks_auth(tmp_path: Path) -> None:
+    """
+    ``tools/mcp/<name>.yaml`` with ``auth: {type: databricks, profile}``
+    parses into MCPServerConfig.databricks_profile.
+
+    Regression test for the bug this task fixes: _parse_http_mcp_server
+    never read `auth:` at all before this change, so a bundle-file server
+    with this exact YAML would silently connect with NO auth — the token
+    header would simply never be added, and the failure mode would be an
+    opaque 401 from the remote server, not a parse-time error.
+    """
+    _write_bundle_mcp_yaml(
+        tmp_path,
+        "docs.yaml",
+        {
+            "name": "docs",
+            "transport": "http",
+            "url": "https://my-workspace.databricks.com/api/2.0/mcp",
+            "auth": {"type": "databricks", "profile": "oss"},
+        },
+    )
+    spec = parse(tmp_path)
+
+    server = next(s for s in spec.mcp_servers if s.name == "docs")
+    assert server.databricks_profile == "oss"
+
+
+def test_discover_mcp_bundle_file_parses_sigv4_auth(tmp_path: Path) -> None:
+    """``tools/mcp/<name>.yaml`` with ``auth: {type: sigv4, ...}`` parses correctly.
+
+    Same regression class as the databricks test above — sigv4 auth was
+    equally silently dropped by _parse_http_mcp_server before this fix.
+    """
+    _write_bundle_mcp_yaml(
+        tmp_path,
+        "ace-peg.yaml",
+        {
+            "name": "ace-peg",
+            "transport": "http",
+            "url": "https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations",
+            "auth": {
+                "type": "sigv4",
+                "profile": "default",
+                "service": "bedrock-agentcore",
+                "region": "ap-southeast-2",
+            },
+        },
+    )
+    spec = parse(tmp_path)
+
+    server = next(s for s in spec.mcp_servers if s.name == "ace-peg")
+    assert server.aws_profile == "default"
+    assert server.aws_service == "bedrock-agentcore"
+    assert server.aws_region == "ap-southeast-2"
+
+
+def test_discover_mcp_bundle_file_ssm_parameter(tmp_path: Path) -> None:
+    """``ssm_parameter`` (no ``url``) parses into aws_ssm_parameter.
+
+    This is the operator's actual use case.
+    """
+    _write_bundle_mcp_yaml(
+        tmp_path,
+        "ace-marshall.yaml",
+        {
+            "name": "ace-marshall",
+            "transport": "http",
+            "ssm_parameter": "/ace/poc/ace-os/marshall/runtime/url",
+            "auth": {
+                "type": "sigv4",
+                "profile": "default",
+                "service": "bedrock-agentcore",
+                "region": "ap-southeast-2",
+            },
+        },
+    )
+    spec = parse(tmp_path)
+
+    server = next(s for s in spec.mcp_servers if s.name == "ace-marshall")
+    assert server.url is None
+    assert server.aws_ssm_parameter == "/ace/poc/ace-os/marshall/runtime/url"
+
+
+def test_discover_mcp_bundle_file_ssm_parameter_and_url_both_set_raises(tmp_path: Path) -> None:
+    """Specifying both url and ssm_parameter in a bundle file is a usage error."""
+    _write_bundle_mcp_yaml(
+        tmp_path,
+        "bad.yaml",
+        {
+            "name": "bad",
+            "transport": "http",
+            "url": "https://example.com/mcp",
+            "ssm_parameter": "/ace/poc/ace-os/marshall/runtime/url",
+            "auth": {"type": "sigv4", "profile": "default", "service": "bedrock-agentcore"},
+        },
+    )
+
+    with pytest.raises(OmnigentError, match=r"exactly one of 'url' or 'ssm_parameter'"):
+        parse(tmp_path)
+
+
+def test_discover_mcp_bundle_file_ssm_parameter_without_aws_profile_raises(tmp_path: Path) -> None:
+    """ssm_parameter without a sigv4 auth block is a usage error in bundle files too."""
+    _write_bundle_mcp_yaml(
+        tmp_path,
+        "bad.yaml",
+        {
+            "name": "bad",
+            "transport": "http",
+            "ssm_parameter": "/ace/poc/ace-os/marshall/runtime/url",
+        },
+    )
+
+    with pytest.raises(OmnigentError, match=r"'ssm_parameter' requires auth"):
+        parse(tmp_path)
+
+
+def test_discover_mcp_bundle_file_missing_url_and_ssm_parameter_raises(tmp_path: Path) -> None:
+    """Missing both url and ssm_parameter still fails loud, with the reworded message."""
+    _write_bundle_mcp_yaml(tmp_path, "bad.yaml", {"name": "bad", "transport": "http"})
+
+    with pytest.raises(OmnigentError, match=r"missing required field 'url' or 'ssm_parameter'"):
+        parse(tmp_path)
+
+
 def test_parse_local_python_tools(agent_dir: Path) -> None:
     py_dir = agent_dir / "tools" / "python"
     py_dir.mkdir(parents=True)

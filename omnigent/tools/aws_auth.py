@@ -40,8 +40,9 @@ class SigV4SessionAuth(httpx.Auth):
             session = boto3.Session(profile_name=self._profile, region_name=self._region)
             credentials = session.get_credentials()
         except ProfileNotFound:
+            session = None
             credentials = None
-        if credentials is None:
+        if session is None or credentials is None:
             raise RuntimeError(
                 f"No AWS credentials found for profile {self._profile!r}. "
                 f"Run `aws-azure-login --mode cli --profile {self._profile}` "

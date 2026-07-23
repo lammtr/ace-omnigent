@@ -7,6 +7,8 @@ the MCP client core.
 
 from __future__ import annotations
 
+import urllib.parse
+
 import boto3
 import httpx
 from botocore.auth import SigV4Auth
@@ -60,3 +62,55 @@ class SigV4SessionAuth(httpx.Auth):
         for key, value in aws_request.headers.items():
             request.headers[key] = value
         yield request
+
+
+def resolve_ssm_runtime_url(
+    ssm_parameter: str,
+    profile: str,
+    region: str | None,
+    qualifier: str = "DEFAULT",
+) -> str:
+    """
+    Fetch a Bedrock AgentCore runtime ARN from AWS SSM Parameter Store
+    and build its invocation URL.
+
+    Ported from ``ace-runtime-test/ace_explore.py``'s
+    ``fetch_runtime_arn``/``build_mcp_url``. Unlike credential
+    resolution, a runtime ARN doesn't rotate on a timer — only on
+    redeploy — so this is resolved once per connect/reconnect, not per
+    request (see ``McpServerConnection._resolve_http_url``).
+
+    :param ssm_parameter: SSM Parameter Store path holding the runtime
+        ARN, e.g. ``"/ace/poc/ace-os/marshall/runtime/url"``.
+    :param profile: AWS CLI profile name, used for both the SSM lookup
+        and (separately) SigV4 signing.
+    :param region: AWS region, or ``None`` to fall back to the profile's
+        configured region.
+    :param qualifier: AgentCore invocation qualifier.
+    :returns: The full AgentCore data-plane invocations URL.
+    :raises RuntimeError: If the profile has no credentials, or the SSM
+        parameter does not exist.
+    """
+    try:
+        session = boto3.Session(profile_name=profile, region_name=region)
+        ssm = session.client("ssm")
+    except ProfileNotFound:
+        raise RuntimeError(
+            f"No AWS credentials found for profile {profile!r}. "
+            f"Run `aws-azure-login --mode cli --profile {profile}` and retry."
+        ) from None
+    resolved_region = region or session.region_name
+    try:
+        response = ssm.get_parameter(Name=ssm_parameter)
+    except ssm.exceptions.ParameterNotFound:
+        raise RuntimeError(
+            f"SSM parameter {ssm_parameter!r} not found (profile {profile!r}, "
+            f"region {resolved_region!r}). Check the parameter path and that "
+            f"the runtime is deployed."
+        ) from None
+    runtime_arn = response["Parameter"]["Value"]
+    encoded_arn = urllib.parse.quote(runtime_arn, safe="")
+    return (
+        f"https://bedrock-agentcore.{resolved_region}.amazonaws.com"
+        f"/runtimes/{encoded_arn}/invocations?qualifier={qualifier}"
+    )

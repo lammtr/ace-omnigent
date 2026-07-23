@@ -6063,6 +6063,12 @@ def attach(
 @cli.command()
 @click.argument("target", required=False, metavar="[AGENT]")
 @click.option(
+    "--config",
+    "config_path",
+    default=None,
+    help="Agent YAML file or directory — an explicit-flag alternative to the AGENT positional.",
+)
+@click.option(
     "--tools",
     default=None,
     help="Client-side tool set name (e.g. 'coding') for shell access.",
@@ -6120,6 +6126,7 @@ def attach(
 )
 def run(
     target: str | None,
+    config_path: str | None,
     tools: str | None,
     harness: str | None,
     model: str | None,
@@ -6136,9 +6143,12 @@ def run(
 ) -> None:
     """Start a session with an Omnigent agent.
 
-    AGENT may be an agent YAML file or an agent directory. Without AGENT,
-    pass ``--server`` to connect directly to a server, or pass
-    ``--harness`` to launch a built-in harness directly.
+    AGENT may be an agent YAML file or an agent directory, given either as
+    the positional AGENT argument or via ``--config`` (equivalent; useful
+    for callers that prefer a named flag over a bare positional). Passing
+    both is a usage error. Without AGENT, pass ``--server`` to connect
+    directly to a server, or pass ``--harness`` to launch a built-in
+    harness directly.
 
     Default: omnigent server+REPL architecture (spawns a local
     server, REPL connects as an HTTP client). With ``--server <url>`` and
@@ -6152,9 +6162,15 @@ def run(
       omnigent run --harness codex -p "review the last commit"
       omnigent run examples/hello_world.yaml
       omnigent run examples/hello_world.yaml --harness codex --model gpt-5.4-mini
+      omnigent run --config examples/hello_world.yaml
       omnigent run --server http://localhost:6767
       omnigent run examples/databricks_coding_agent.yaml --server https://<app>.databricksapps.com
     """
+    if config_path is not None:
+        if target is not None:
+            raise click.UsageError("Pass either AGENT or --config, not both.")
+        target = config_path
+
     # Apply config defaults for any value the user did not pass explicitly.
     # Explicit CLI args always take precedence; project-local config overrides
     # global config, which provides user-level defaults.

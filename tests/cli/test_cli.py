@@ -3227,6 +3227,53 @@ def test_run_with_agent_still_dispatches_existing_path(monkeypatch: pytest.Monke
     )
 
 
+def test_run_config_flag_sets_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``run --config AGENT.yaml`` dispatches with that path as the target.
+
+    ``--config`` is an explicit-flag alternative to the positional AGENT
+    argument, for callers (e.g. scripts) that prefer a named flag over a
+    bare positional.
+    """
+    monkeypatch.setattr("omnigent.cli._load_effective_config", dict)
+    dispatch = Mock()
+    monkeypatch.setattr("omnigent.cli._dispatch_run", dispatch)
+
+    result = CliRunner().invoke(
+        cli, ["run", "--config", "tests/resources/examples/hello_world.yaml"]
+    )
+
+    assert result.exit_code == 0, result.output
+    dispatch.assert_called_once()
+    assert dispatch.call_args.kwargs["target"] == "tests/resources/examples/hello_world.yaml"
+
+
+def test_run_rejects_both_agent_positional_and_config_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Passing both AGENT and --config is a usage error, not a silent pick.
+
+    If one silently won, a caller who thought they overrode the other via
+    --config (or vice versa) would launch the wrong agent without warning.
+    """
+    monkeypatch.setattr("omnigent.cli._load_effective_config", dict)
+    dispatch = Mock()
+    monkeypatch.setattr("omnigent.cli._dispatch_run", dispatch)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "run",
+            "tests/resources/examples/hello_world.yaml",
+            "--config",
+            "tests/resources/examples/hello_world.yaml",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Pass either AGENT or --config, not both." in result.output
+    dispatch.assert_not_called()
+
+
 def test_run_resume_picker_forwards_to_run_chat(monkeypatch: pytest.MonkeyPatch) -> None:
     """Bare ``--resume`` forwards as ``resume_picker=True``."""
     monkeypatch.setattr("omnigent.cli._load_global_config", dict)

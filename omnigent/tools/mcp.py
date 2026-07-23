@@ -54,7 +54,7 @@ from mcp.types import Tool as McpToolDef
 
 from omnigent.runner.identity import strip_runner_auth_secrets
 from omnigent.spec.types import MCPServerConfig, RetryPolicy
-from omnigent.tools.aws_auth import SigV4SessionAuth
+from omnigent.tools.aws_auth import SigV4SessionAuth, resolve_ssm_runtime_url
 
 _T = TypeVar("_T")
 
@@ -907,19 +907,11 @@ class McpServerConnection:
             anyio memory object streams parameterized over
             ``SessionMessage``.
         """
-        if self.config.url is None:
-            # Validator prevents this at spec-load time; the assert
-            # is a belt-and-suspenders check for programmatic
-            # MCPServerConfig construction paths that skip the
-            # validator.
-            raise RuntimeError(
-                f"MCP server {self.config.name!r} transport='http' but url is None — "
-                "validator should have caught this"
-            )
+        url = self._resolve_http_url()
         timeout = self.config.timeout
         headers = self._resolve_http_headers()
         auth = self._resolve_http_auth()
-        if _is_sse_endpoint(self.config.url):
+        if _is_sse_endpoint(url):
             # Legacy-SSE servers (e.g. crawl4ai's /mcp/sse) hang the
             # Streamable HTTP client in teardown, which would block the
             # except-clause SSE fallback below from ever running. Route
@@ -932,16 +924,16 @@ class McpServerConnection:
             # is the intended trade-off: it matches the /sse convention
             # and avoiding the teardown hang takes priority over covering
             # a misnamed-endpoint case that is not known to occur.
-            return await self._open_sse_transport(stack, timeout, headers, auth)
+            return await self._open_sse_transport(stack, url, timeout, headers, auth)
         try:
-            return await self._open_streamable_http_transport(stack, timeout, headers, auth)
+            return await self._open_streamable_http_transport(stack, url, timeout, headers, auth)
         except Exception as exc:
             _logger.debug(
                 "Streamable HTTP failed for %s (%s), falling back to SSE",
                 self.config.name,
                 exc,
             )
-            return await self._open_sse_transport(stack, timeout, headers, auth)
+            return await self._open_sse_transport(stack, url, timeout, headers, auth)
 
     def _resolve_http_headers(self) -> dict[str, str] | None:
         """
@@ -977,9 +969,30 @@ class McpServerConnection:
             self.config.aws_profile, self.config.aws_service, self.config.aws_region
         )
 
+    def _resolve_http_url(self) -> str:
+        """
+        Resolve the effective HTTP URL for the MCP connection.
+
+        Returns ``config.url`` verbatim when set. Otherwise resolves it
+        fresh from AWS SSM (``config.aws_ssm_parameter``) on every call —
+        same per-connect cadence as ``_resolve_http_headers``, not
+        per-request: a runtime ARN doesn't rotate the way credentials do,
+        it only changes on redeploy.
+
+        :returns: The URL to connect to.
+        """
+        if self.config.url is not None:
+            return self.config.url
+        assert self.config.aws_ssm_parameter is not None  # enforced at parse time
+        assert self.config.aws_profile is not None  # enforced at parse time
+        return resolve_ssm_runtime_url(
+            self.config.aws_ssm_parameter, self.config.aws_profile, self.config.aws_region
+        )
+
     async def _open_streamable_http_transport(
         self,
         stack: AsyncExitStack,
+        url: str,
         timeout: int | None,
         headers: dict[str, str] | None,
         auth: httpx.Auth | None,
@@ -992,6 +1005,8 @@ class McpServerConnection:
         for server-initiated messages.
 
         :param stack: The lifecycle task's exit stack.
+        :param url: Resolved connection URL — either the config's
+            static ``url`` or one resolved via AWS SSM.
         :param timeout: Per-server timeout in seconds, or ``None``
             for SDK defaults.
         :param headers: Resolved HTTP headers (may include a
@@ -999,10 +1014,9 @@ class McpServerConnection:
         :param auth: Resolved AWS SigV4 signer, or None.
         :returns: A ``(read_stream, write_stream)`` tuple.
         """
-        assert self.config.url is not None
         read_stream, write_stream, _get_session_id = await stack.enter_async_context(
             streamablehttp_client(
-                url=self.config.url,
+                url=url,
                 headers=headers,
                 timeout=float(timeout) if timeout is not None else 30,
                 sse_read_timeout=float(timeout) if timeout is not None else 300,
@@ -1014,6 +1028,7 @@ class McpServerConnection:
     async def _open_sse_transport(
         self,
         stack: AsyncExitStack,
+        url: str,
         timeout: int | None,
         headers: dict[str, str] | None,
         auth: httpx.Auth | None,
@@ -1025,6 +1040,8 @@ class McpServerConnection:
         HTTP (e.g. older MCP servers that only speak SSE).
 
         :param stack: The lifecycle task's exit stack.
+        :param url: Resolved connection URL — either the config's
+            static ``url`` or one resolved via AWS SSM.
         :param timeout: Per-server timeout in seconds, or ``None``
             for SDK defaults.
         :param headers: Resolved HTTP headers (may include a
@@ -1032,10 +1049,9 @@ class McpServerConnection:
         :param auth: Resolved AWS SigV4 signer, or None.
         :returns: A ``(read_stream, write_stream)`` tuple.
         """
-        assert self.config.url is not None
         read_stream, write_stream = await stack.enter_async_context(
             sse_client(
-                url=self.config.url,
+                url=url,
                 headers=headers,
                 # MCP SDK default: 5s for initial HTTP connection handshake.
                 timeout=float(timeout) if timeout is not None else 5,

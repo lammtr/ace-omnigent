@@ -1,0 +1,13 @@
+# The Marshall — Bedrock AgentCore Runtime, IAM/SigV4-authed.
+#
+# Before connecting, make sure the `default` AWS profile is fresh:
+#   aws-azure-login --mode cli --profile default
+
+name: ace-marshall
+transport: http
+ssm_parameter: /ace/poc/ace-os/marshall/runtime/url
+auth:
+  type: sigv4
+  profile: default
+  service: bedrock-agentcore
+  region: ap-southeast-2

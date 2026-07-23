@@ -260,6 +260,29 @@ tools:
       region: ap-southeast-2  # optional — falls back to the profile's configured region
 ```
 
+Instead of a static `url`, an `ssm_parameter` can be given to resolve the
+connection URL from AWS SSM Parameter Store at connect time (requires
+`auth: {type: sigv4, ...}`, since the same profile is used for both the
+lookup and request signing):
+
+```yaml
+tools:
+  ace-marshall:
+    type: mcp
+    ssm_parameter: /ace/poc/ace-os/marshall/runtime/url   # holds a runtime ARN
+    auth:
+      type: sigv4
+      profile: default
+      service: bedrock-agentcore
+      region: ap-southeast-2
+```
+
+`ssm_parameter` and `url` are mutually exclusive. The parameter's value is
+treated as the runtime ARN and re-resolved into the invocation URL fresh
+on every connect/reconnect — so a redeploy (which changes the ARN) is
+picked up on the next reconnect without a YAML edit. This works identically
+in a standalone `tools/mcp/<name>.yaml` bundle file.
+
 `type: databricks` resolves a bearer token at connection time from
 `~/.databrickscfg`. `type: sigv4` signs every request with AWS SigV4,
 re-resolving credentials from the named AWS CLI profile on each request —

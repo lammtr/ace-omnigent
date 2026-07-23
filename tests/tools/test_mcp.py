@@ -429,6 +429,20 @@ def test_mcp_server_config_repr_includes_sigv4_fields() -> None:
     assert "aws_region='ap-southeast-2'" in r
 
 
+def test_mcp_server_config_repr_includes_ssm_parameter() -> None:
+    """
+    MCPServerConfig.__repr__ includes aws_ssm_parameter un-redacted — it's
+    a parameter path, not a secret, same treatment as aws_profile.
+    """
+    config = MCPServerConfig(
+        name="ssm-svc",
+        aws_ssm_parameter="/ace/poc/ace-os/marshall/runtime/url",
+    )
+    r = repr(config)
+
+    assert "aws_ssm_parameter='/ace/poc/ace-os/marshall/runtime/url'" in r
+
+
 # ── _normalize_input_schema ───────────────────────────────
 
 
@@ -1444,6 +1458,87 @@ async def test_http_connect_passes_sigv4_auth_to_transport() -> None:
     assert auth._region == "ap-southeast-2"
 
     await conn.close()
+
+
+@pytest.mark.asyncio()
+async def test_http_connect_resolves_url_from_ssm_parameter() -> None:
+    """
+    connect() resolves the URL via resolve_ssm_runtime_url when
+    aws_ssm_parameter is set (no static url configured), and passes the
+    RESOLVED url to the transport — not the raw ssm_parameter path.
+    """
+    config = MCPServerConfig(
+        name="test-ssm",
+        aws_ssm_parameter="/ace/poc/ace-os/marshall/runtime/url",
+        aws_profile="default",
+        aws_service="bedrock-agentcore",
+        aws_region="ap-southeast-2",
+    )
+    resolved_url = "https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations"
+
+    with patch(
+        "omnigent.tools.mcp.resolve_ssm_runtime_url", return_value=resolved_url
+    ) as mock_resolve:
+        with _mock_http_transport() as captured:
+            conn = McpServerConnection(config=config)
+            await conn.connect()
+
+    mock_resolve.assert_called_once_with(
+        "/ace/poc/ace-os/marshall/runtime/url", "default", "ap-southeast-2"
+    )
+    assert captured.transport_kwargs["url"] == resolved_url
+
+    await conn.close()
+
+
+@pytest.mark.asyncio()
+async def test_http_connect_uses_static_url_without_calling_ssm_resolver() -> None:
+    """
+    When config.url is set, connect() must NOT call the SSM resolver at
+    all — url always takes priority, and an unnecessary AWS API call on
+    every connect for a server that doesn't use ssm_parameter would be a
+    regression.
+    """
+    config = MCPServerConfig(name="test-static-url", url="http://localhost:9000/mcp")
+
+    with patch("omnigent.tools.mcp.resolve_ssm_runtime_url") as mock_resolve:
+        with _mock_http_transport() as captured:
+            conn = McpServerConnection(config=config)
+            await conn.connect()
+
+    mock_resolve.assert_not_called()
+    assert captured.transport_kwargs["url"] == "http://localhost:9000/mcp"
+
+    await conn.close()
+
+
+def test_resolve_http_url_reresolves_on_each_call() -> None:
+    """
+    _resolve_http_url() re-resolves via SSM on every call, not cached —
+    same cadence requirement as the Databricks token and SigV4 auth
+    resolvers. A stale cached URL would survive a redeploy indefinitely.
+    """
+    config = MCPServerConfig(
+        name="test-ssm-fresh",
+        aws_ssm_parameter="/some/param",
+        aws_profile="default",
+        aws_service="bedrock-agentcore",
+    )
+    conn = McpServerConnection(config=config)
+
+    with patch(
+        "omnigent.tools.mcp.resolve_ssm_runtime_url",
+        side_effect=[
+            "https://first.example.com/invocations",
+            "https://second.example.com/invocations",
+        ],
+    ) as mock_resolve:
+        first = conn._resolve_http_url()
+        second = conn._resolve_http_url()
+
+    assert first == "https://first.example.com/invocations"
+    assert second == "https://second.example.com/invocations"
+    assert mock_resolve.call_count == 2
 
 
 @pytest.mark.asyncio()
@@ -2501,11 +2596,11 @@ async def test_open_http_transport_routes_sse_url_straight_to_sse() -> None:
     conn = McpServerConnection(config=MCPServerConfig(name="c", url="http://h:1/mcp/sse"))
     calls: list[str] = []
 
-    async def fake_sse(stack, timeout, headers, auth):
+    async def fake_sse(stack, url, timeout, headers, auth):
         calls.append("sse")
         return ("r", "w")
 
-    async def fake_streamable(stack, timeout, headers, auth):
+    async def fake_streamable(stack, url, timeout, headers, auth):
         calls.append("streamable")
         return ("r", "w")
 
@@ -2529,11 +2624,11 @@ async def test_open_http_transport_uses_streamable_for_non_sse_url() -> None:
     conn = McpServerConnection(config=MCPServerConfig(name="c", url="http://h:1/mcp"))
     calls: list[str] = []
 
-    async def fake_sse(stack, timeout, headers, auth):
+    async def fake_sse(stack, url, timeout, headers, auth):
         calls.append("sse")
         return ("r", "w")
 
-    async def fake_streamable(stack, timeout, headers, auth):
+    async def fake_streamable(stack, url, timeout, headers, auth):
         calls.append("streamable")
         return ("r", "w")
 

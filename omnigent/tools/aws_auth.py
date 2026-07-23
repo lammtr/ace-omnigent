@@ -11,6 +11,7 @@ import boto3
 import httpx
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
+from botocore.exceptions import ProfileNotFound
 
 
 class SigV4SessionAuth(httpx.Auth):
@@ -35,8 +36,11 @@ class SigV4SessionAuth(httpx.Auth):
         self._region = region
 
     def auth_flow(self, request: httpx.Request):
-        session = boto3.Session(profile_name=self._profile, region_name=self._region)
-        credentials = session.get_credentials()
+        try:
+            session = boto3.Session(profile_name=self._profile, region_name=self._region)
+            credentials = session.get_credentials()
+        except ProfileNotFound:
+            credentials = None
         if credentials is None:
             raise RuntimeError(
                 f"No AWS credentials found for profile {self._profile!r}. "

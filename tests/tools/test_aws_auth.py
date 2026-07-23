@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 from botocore.credentials import Credentials
+from botocore.exceptions import ProfileNotFound
 
 from omnigent.tools.aws_auth import SigV4SessionAuth
 
@@ -86,6 +87,28 @@ def test_sigv4_auth_missing_credentials_raises_actionable_error() -> None:
     AttributeError from calling .get_frozen_credentials() on None.
     """
     with _mock_boto3_session(None):  # type: ignore[arg-type]
+        auth = SigV4SessionAuth(
+            profile="stale-profile", service="bedrock-agentcore", region="ap-southeast-2"
+        )
+        with pytest.raises(RuntimeError) as exc:
+            next(auth.auth_flow(_make_request()))
+
+    assert "stale-profile" in str(exc.value)
+    assert "aws-azure-login" in str(exc.value)
+
+
+def test_sigv4_auth_profile_not_found_raises_actionable_error() -> None:
+    """
+    boto3.Session(profile_name=...) raises ProfileNotFound immediately at
+    construction — before get_credentials() is ever reached — when the
+    named profile doesn't exist (e.g. a typo'd or stale profile name).
+    This must surface as the same actionable RuntimeError as the
+    credentials-is-None case, not an unhandled ProfileNotFound.
+    """
+    with patch(
+        "omnigent.tools.aws_auth.boto3.Session",
+        side_effect=ProfileNotFound(profile="stale-profile"),
+    ):
         auth = SigV4SessionAuth(
             profile="stale-profile", service="bedrock-agentcore", region="ap-southeast-2"
         )

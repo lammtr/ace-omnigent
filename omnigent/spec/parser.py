@@ -2242,6 +2242,56 @@ def check_unresolved_env_vars(key: str, value: str) -> None:
 _TOOLS_CONFIG_KEYS = frozenset({"agents", "builtins", "timeout", "retry", "sandbox"})
 
 
+def _parse_mcp_auth_block(
+    raw_auth: object,
+    describe: str,
+    location_suffix: str = "",
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """
+    Parse an MCP server's ``auth:`` block (``databricks`` or ``sigv4``).
+
+    Shared by the inline ``tools:`` block parser and the standalone
+    ``tools/mcp/<name>.yaml`` file parser so both auth types behave
+    identically regardless of which YAML shape declares the server.
+
+    :param raw_auth: The raw ``auth`` value from the YAML mapping.
+    :param describe: Error-message prefix identifying the server, e.g.
+        ``f"Inline MCP server {name!r}"`` or ``f"MCP server {name!r}"``.
+    :param location_suffix: Error-message suffix, e.g. ``f": {yaml_file}"``
+        for file-based parsing, or ``""`` for inline parsing.
+    :returns: ``(databricks_profile, aws_profile, aws_service, aws_region)``,
+        each ``None`` unless *raw_auth* declares the matching type.
+    :raises OmnigentError: If a ``databricks`` block is missing ``profile``,
+        or a ``sigv4`` block is missing ``profile``/``service``.
+    """
+    databricks_profile: str | None = None
+    aws_profile: str | None = None
+    aws_service: str | None = None
+    aws_region: str | None = None
+    if isinstance(raw_auth, dict) and str(raw_auth.get("type", "")) == "databricks":
+        raw_profile = raw_auth.get("profile")
+        if raw_profile is None:
+            raise OmnigentError(
+                f"{describe} auth type 'databricks' requires a 'profile' field{location_suffix}",
+                code=ErrorCode.INVALID_INPUT,
+            )
+        databricks_profile = str(raw_profile)
+    if isinstance(raw_auth, dict) and str(raw_auth.get("type", "")) == "sigv4":
+        raw_profile = raw_auth.get("profile")
+        raw_service = raw_auth.get("service")
+        if raw_profile is None or raw_service is None:
+            raise OmnigentError(
+                f"{describe} auth type 'sigv4' requires 'profile' and 'service' fields"
+                f"{location_suffix}",
+                code=ErrorCode.INVALID_INPUT,
+            )
+        aws_profile = str(raw_profile)
+        aws_service = str(raw_service)
+        if (raw_region := raw_auth.get("region")) is not None:
+            aws_region = str(raw_region)
+    return databricks_profile, aws_profile, aws_service, aws_region
+
+
 def _parse_inline_mcp_servers(
     raw_tools: object,
     *,
@@ -2273,9 +2323,10 @@ def _parse_inline_mcp_servers(
     even when they appear as dict values.
 
     Transport is inferred: ``command`` present → ``"stdio"``,
-    ``url`` present → ``"http"``. Entries where neither is present
-    (e.g. ``databricks_server``-only Databricks MCPs) are skipped —
-    they don't have a local spawn or SSE endpoint to display.
+    ``url`` or ``ssm_parameter`` present → ``"http"``. Entries where
+    none of these are present (e.g. ``databricks_server``-only
+    Databricks MCPs) are skipped — they don't have a local spawn or
+    SSE endpoint to display.
 
     :param raw_tools: The raw value of the top-level ``tools:`` key
         in config.yaml. ``None`` or a non-dict value returns an empty
@@ -2299,9 +2350,10 @@ def _parse_inline_mcp_servers(
         name = str(key)
         command = val.get("command")
         url = val.get("url")
+        ssm_parameter = val.get("ssm_parameter")
         if command is not None:
             transport: str = "stdio"
-        elif url is not None:
+        elif url is not None or ssm_parameter is not None:
             transport = "http"
         else:
             # Databricks-managed server or unknown shape — no local
@@ -2323,39 +2375,26 @@ def _parse_inline_mcp_servers(
                 code=ErrorCode.INVALID_INPUT,
             )
         env = expand_env_vars(raw_env) if expand_env and raw_env else raw_env
-        # Optional Databricks auth — resolves a bearer token at
-        # connection time from ~/.databrickscfg.
+        # Optional Databricks/SigV4 auth block — see _parse_mcp_auth_block.
         raw_auth = val.get("auth")
-        databricks_profile: str | None = None
-        if isinstance(raw_auth, dict) and str(raw_auth.get("type", "")) == "databricks":
-            raw_profile = raw_auth.get("profile")
-            if raw_profile is None:
+        databricks_profile, aws_profile, aws_service, aws_region = _parse_mcp_auth_block(
+            raw_auth, f"Inline MCP server {name!r}"
+        )
+        ssm_parameter_str: str | None = None
+        if ssm_parameter is not None:
+            if url is not None:
                 raise OmnigentError(
-                    f"Inline MCP server {name!r} auth type 'databricks' "
-                    f"requires a 'profile' field",
+                    f"Inline MCP server {name!r} must specify exactly one of "
+                    f"'url' or 'ssm_parameter', not both",
                     code=ErrorCode.INVALID_INPUT,
                 )
-            databricks_profile = str(raw_profile)
-        # Optional AWS SigV4 auth — signs every request with credentials
-        # from a named AWS CLI profile (e.g. one kept fresh by
-        # aws-azure-login). Re-resolved fresh per request by
-        # SigV4SessionAuth, not cached here.
-        aws_profile: str | None = None
-        aws_service: str | None = None
-        aws_region: str | None = None
-        if isinstance(raw_auth, dict) and str(raw_auth.get("type", "")) == "sigv4":
-            raw_profile = raw_auth.get("profile")
-            raw_service = raw_auth.get("service")
-            if raw_profile is None or raw_service is None:
+            if aws_profile is None:
                 raise OmnigentError(
-                    f"Inline MCP server {name!r} auth type 'sigv4' requires "
-                    f"'profile' and 'service' fields",
+                    f"Inline MCP server {name!r} 'ssm_parameter' requires "
+                    f"auth: {{type: sigv4, profile: ...}} to resolve via AWS SSM",
                     code=ErrorCode.INVALID_INPUT,
                 )
-            aws_profile = str(raw_profile)
-            aws_service = str(raw_service)
-            if (raw_region := raw_auth.get("region")) is not None:
-                aws_region = str(raw_region)
+            ssm_parameter_str = str(ssm_parameter)
         # Optional per-server tool allow-list (the YAML ``tools:`` whitelist) —
         # only these tool names are exposed to the model; ``None`` exposes all.
         # Mirrors ``MCPTool.tools`` and is filtered downstream in
@@ -2384,6 +2423,7 @@ def _parse_inline_mcp_servers(
                 aws_profile=aws_profile,
                 aws_service=aws_service,
                 aws_region=aws_region,
+                aws_ssm_parameter=ssm_parameter_str,
                 tools=tool_allowlist,
             )
         )

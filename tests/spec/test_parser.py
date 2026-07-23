@@ -1451,6 +1451,85 @@ def test_parse_inline_mcp_sigv4_auth_missing_service_raises(tmp_path: Path) -> N
         parse(tmp_path)
 
 
+def test_parse_inline_mcp_ssm_parameter(tmp_path: Path) -> None:
+    """
+    An inline MCP entry with ``ssm_parameter`` (no ``url``) parses into
+    MCPServerConfig.aws_ssm_parameter, with transport inferred as http.
+
+    Failure means either the field is dropped, or (more subtly) transport
+    inference — which currently only checks command/url — silently skips
+    the whole entry because neither command nor url is present.
+    """
+    config = {
+        "spec_version": 1,
+        "name": "ssm-agent",
+        "tools": {
+            "marshall": {
+                "type": "mcp",
+                "ssm_parameter": "/ace/poc/ace-os/marshall/runtime/url",
+                "auth": {
+                    "type": "sigv4",
+                    "profile": "default",
+                    "service": "bedrock-agentcore",
+                    "region": "ap-southeast-2",
+                },
+            }
+        },
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+    spec = parse(tmp_path)
+
+    assert len(spec.mcp_servers) == 1
+    server = spec.mcp_servers[0]
+    assert server.transport == "http"
+    assert server.url is None
+    assert server.aws_ssm_parameter == "/ace/poc/ace-os/marshall/runtime/url"
+    assert server.aws_profile == "default"
+
+
+def test_parse_inline_mcp_ssm_parameter_and_url_both_set_raises(tmp_path: Path) -> None:
+    """Specifying both url and ssm_parameter is a usage error, not a silent pick."""
+    config = {
+        "spec_version": 1,
+        "name": "ssm-agent-bad",
+        "tools": {
+            "marshall": {
+                "type": "mcp",
+                "url": "https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations",
+                "ssm_parameter": "/ace/poc/ace-os/marshall/runtime/url",
+                "auth": {"type": "sigv4", "profile": "default", "service": "bedrock-agentcore"},
+            }
+        },
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    with pytest.raises(OmnigentError, match=r"exactly one of 'url' or 'ssm_parameter'"):
+        parse(tmp_path)
+
+
+def test_parse_inline_mcp_ssm_parameter_without_aws_profile_raises(tmp_path: Path) -> None:
+    """ssm_parameter without an auth: {type: sigv4, ...} block is a usage error.
+
+    There's no separate credential concept for the SSM lookup itself — it
+    reuses aws_profile from the sigv4 auth block. Without it, the lookup
+    has no AWS profile to use.
+    """
+    config = {
+        "spec_version": 1,
+        "name": "ssm-agent-noauth",
+        "tools": {
+            "marshall": {
+                "type": "mcp",
+                "ssm_parameter": "/ace/poc/ace-os/marshall/runtime/url",
+            }
+        },
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    with pytest.raises(OmnigentError, match=r"'ssm_parameter' requires auth"):
+        parse(tmp_path)
+
+
 def test_parse_inline_mcp_headers_and_env_expanded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -952,8 +952,8 @@ class MCPServerConfig:
     # transport call, and MCPServerConfig doesn't otherwise police which
     # auth fields co-occur.
     aws_profile: str | None = None
-    aws_service: str | None = None   # e.g. "bedrock-agentcore"; no default — require explicit
-    aws_region: str | None = None    # optional; falls back to the profile's configured region
+    aws_service: str | None = None  # e.g. "bedrock-agentcore"; no default — require explicit
+    aws_region: str | None = None  # optional; falls back to the profile's configured region
     # Stdio-only fields.
     command: str | None = None
     args: list[str] = field(default_factory=list)

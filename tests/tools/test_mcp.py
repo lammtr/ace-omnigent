@@ -19,6 +19,7 @@ from mcp.types import CONNECTION_CLOSED, CallToolResult, ErrorData, ImageContent
 from mcp.types import Tool as McpToolDef
 
 from omnigent.spec.types import MCPServerConfig, RetryPolicy
+from omnigent.tools.aws_auth import SigV4SessionAuth
 from omnigent.tools.mcp import (
     _CIRCUIT_BREAKER_COOLDOWN_SECONDS,
     _CIRCUIT_BREAKER_THRESHOLD,
@@ -406,6 +407,26 @@ def test_mcp_server_config_repr_empty_headers() -> None:
     assert "plain" in r
     assert "http://localhost/sse" in r
     assert "[REDACTED]" not in r
+
+
+def test_mcp_server_config_repr_includes_sigv4_fields() -> None:
+    """
+    MCPServerConfig.__repr__ includes aws_profile/aws_service/aws_region
+    un-redacted (they're names, not secrets — same treatment as
+    databricks_profile).
+    """
+    config = MCPServerConfig(
+        name="sigv4-svc",
+        url="https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations",
+        aws_profile="default",
+        aws_service="bedrock-agentcore",
+        aws_region="ap-southeast-2",
+    )
+    r = repr(config)
+
+    assert "aws_profile='default'" in r
+    assert "aws_service='bedrock-agentcore'" in r
+    assert "aws_region='ap-southeast-2'" in r
 
 
 # ── _normalize_input_schema ───────────────────────────────
@@ -1391,6 +1412,103 @@ async def test_http_connect_passes_none_headers_when_empty() -> None:
 
     # Empty dict is converted to None via `or None`.
     assert captured.transport_kwargs["headers"] is None
+
+    await conn.close()
+
+
+@pytest.mark.asyncio()
+async def test_http_connect_passes_sigv4_auth_to_transport() -> None:
+    """
+    HTTP connect() builds a SigV4SessionAuth and passes it as `auth=` to
+    streamablehttp_client when aws_profile is set.
+
+    If this is missed, requests to a sigv4-configured MCP server go out
+    unsigned via the headers-only code path and AWS rejects every call.
+    """
+    config = MCPServerConfig(
+        name="test-sigv4",
+        url="https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations",
+        aws_profile="default",
+        aws_service="bedrock-agentcore",
+        aws_region="ap-southeast-2",
+    )
+
+    with _mock_http_transport() as captured:
+        conn = McpServerConnection(config=config)
+        await conn.connect()
+
+    auth = captured.transport_kwargs.get("auth")
+    assert isinstance(auth, SigV4SessionAuth)
+    assert auth._profile == "default"
+    assert auth._service == "bedrock-agentcore"
+    assert auth._region == "ap-southeast-2"
+
+    await conn.close()
+
+
+@pytest.mark.asyncio()
+async def test_http_connect_passes_none_auth_when_no_aws_profile() -> None:
+    """
+    Existing Databricks-profile and no-auth configs must keep passing
+    auth=None to the transport — a regression here would attach signing
+    to every MCP connection, not just sigv4-configured ones.
+    """
+    config = MCPServerConfig(
+        name="test-no-sigv4",
+        url="http://localhost:9000/mcp",
+        headers={"Authorization": "Bearer tok_xyz"},
+    )
+
+    with _mock_http_transport() as captured:
+        conn = McpServerConnection(config=config)
+        await conn.connect()
+
+    assert captured.transport_kwargs.get("auth") is None
+
+    await conn.close()
+
+
+@pytest.mark.asyncio()
+async def test_sse_connect_passes_sigv4_auth_to_transport() -> None:
+    """
+    The legacy SSE transport path must also receive the SigV4 auth
+    object — it's a separate SDK call site
+    (_open_sse_transport/sse_client) from the Streamable HTTP one, so
+    wiring one without the other would leave /sse-routed sigv4 servers
+    sending unsigned requests.
+    """
+    config = MCPServerConfig(
+        name="test-sigv4-sse",
+        url="https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/sse",
+        aws_profile="default",
+        aws_service="bedrock-agentcore",
+        aws_region="ap-southeast-2",
+    )
+
+    captured_sse_kwargs: dict[str, Any] = {}
+    mock_sse_ctx = AsyncMock()
+    mock_sse_ctx.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
+    mock_sse_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    def _capturing_sse(**kwargs: Any) -> AsyncMock:
+        captured_sse_kwargs.update(kwargs)
+        return mock_sse_ctx
+
+    mock_session = AsyncMock()
+    mock_session.initialize = AsyncMock()
+    mock_tools_result = MagicMock()
+    mock_tools_result.tools = []
+    mock_session.list_tools.return_value = mock_tools_result
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("omnigent.tools.mcp.sse_client", side_effect=_capturing_sse):
+        with patch("omnigent.tools.mcp.ClientSession", return_value=mock_session):
+            conn = McpServerConnection(config=config)
+            await conn.connect()
+
+    auth = captured_sse_kwargs.get("auth")
+    assert isinstance(auth, SigV4SessionAuth)
 
     await conn.close()
 
@@ -2383,11 +2501,11 @@ async def test_open_http_transport_routes_sse_url_straight_to_sse() -> None:
     conn = McpServerConnection(config=MCPServerConfig(name="c", url="http://h:1/mcp/sse"))
     calls: list[str] = []
 
-    async def fake_sse(stack, timeout, headers):
+    async def fake_sse(stack, timeout, headers, auth):
         calls.append("sse")
         return ("r", "w")
 
-    async def fake_streamable(stack, timeout, headers):
+    async def fake_streamable(stack, timeout, headers, auth):
         calls.append("streamable")
         return ("r", "w")
 
@@ -2411,11 +2529,11 @@ async def test_open_http_transport_uses_streamable_for_non_sse_url() -> None:
     conn = McpServerConnection(config=MCPServerConfig(name="c", url="http://h:1/mcp"))
     calls: list[str] = []
 
-    async def fake_sse(stack, timeout, headers):
+    async def fake_sse(stack, timeout, headers, auth):
         calls.append("sse")
         return ("r", "w")
 
-    async def fake_streamable(stack, timeout, headers):
+    async def fake_streamable(stack, timeout, headers, auth):
         calls.append("streamable")
         return ("r", "w")
 

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlparse
 
+import httpx
 from anyio.streams.memory import (
     MemoryObjectReceiveStream,
     MemoryObjectSendStream,
@@ -53,6 +54,7 @@ from mcp.types import Tool as McpToolDef
 
 from omnigent.runner.identity import strip_runner_auth_secrets
 from omnigent.spec.types import MCPServerConfig, RetryPolicy
+from omnigent.tools.aws_auth import SigV4SessionAuth
 
 _T = TypeVar("_T")
 
@@ -121,6 +123,25 @@ def _resolve_databricks_token(profile: str) -> str:
         raise RuntimeError(
             f"Failed to resolve Databricks token from profile {profile!r}: {exc}"
         ) from exc
+
+
+def _resolve_sigv4_auth(profile: str, service: str, region: str | None) -> SigV4SessionAuth:
+    """
+    Build the AWS SigV4 ``httpx.Auth`` object for a sigv4-configured MCP
+    server.
+
+    Unlike :func:`_resolve_databricks_token`, this does not resolve
+    credentials itself — :class:`SigV4SessionAuth` re-resolves them fresh
+    on every request (see its docstring for why that distinction matters
+    for long-lived MCP connections).
+
+    :param profile: AWS CLI profile name.
+    :param service: AWS service name to sign for, e.g. ``"bedrock-agentcore"``.
+    :param region: AWS region, or ``None`` to fall back to the profile's
+        configured region.
+    :returns: A ``SigV4SessionAuth`` instance.
+    """
+    return SigV4SessionAuth(profile=profile, service=service, region=region)
 
 
 # Seconds to wait after tripping before allowing a single
@@ -897,6 +918,7 @@ class McpServerConnection:
             )
         timeout = self.config.timeout
         headers = self._resolve_http_headers()
+        auth = self._resolve_http_auth()
         if _is_sse_endpoint(self.config.url):
             # Legacy-SSE servers (e.g. crawl4ai's /mcp/sse) hang the
             # Streamable HTTP client in teardown, which would block the
@@ -910,16 +932,16 @@ class McpServerConnection:
             # is the intended trade-off: it matches the /sse convention
             # and avoiding the teardown hang takes priority over covering
             # a misnamed-endpoint case that is not known to occur.
-            return await self._open_sse_transport(stack, timeout, headers)
+            return await self._open_sse_transport(stack, timeout, headers, auth)
         try:
-            return await self._open_streamable_http_transport(stack, timeout, headers)
+            return await self._open_streamable_http_transport(stack, timeout, headers, auth)
         except Exception as exc:
             _logger.debug(
                 "Streamable HTTP failed for %s (%s), falling back to SSE",
                 self.config.name,
                 exc,
             )
-            return await self._open_sse_transport(stack, timeout, headers)
+            return await self._open_sse_transport(stack, timeout, headers, auth)
 
     def _resolve_http_headers(self) -> dict[str, str] | None:
         """
@@ -940,11 +962,27 @@ class McpServerConnection:
             merged.setdefault("Authorization", f"Bearer {token}")
         return merged or None
 
+    def _resolve_http_auth(self) -> httpx.Auth | None:
+        """
+        Build the ``httpx.Auth`` object for the MCP connection, or
+        ``None`` if no non-header auth scheme is configured.
+
+        :returns: A :class:`SigV4SessionAuth` when ``aws_profile`` is
+            set, else ``None``.
+        """
+        if self.config.aws_profile is None:
+            return None
+        assert self.config.aws_service is not None  # enforced at parse time
+        return _resolve_sigv4_auth(
+            self.config.aws_profile, self.config.aws_service, self.config.aws_region
+        )
+
     async def _open_streamable_http_transport(
         self,
         stack: AsyncExitStack,
         timeout: int | None,
         headers: dict[str, str] | None,
+        auth: httpx.Auth | None,
     ) -> tuple[_ReadStream, _WriteStream]:
         """
         Open a Streamable HTTP MCP transport.
@@ -958,6 +996,7 @@ class McpServerConnection:
             for SDK defaults.
         :param headers: Resolved HTTP headers (may include a
             Databricks bearer token), or ``None``.
+        :param auth: Resolved AWS SigV4 signer, or None.
         :returns: A ``(read_stream, write_stream)`` tuple.
         """
         assert self.config.url is not None
@@ -967,6 +1006,7 @@ class McpServerConnection:
                 headers=headers,
                 timeout=float(timeout) if timeout is not None else 30,
                 sse_read_timeout=float(timeout) if timeout is not None else 300,
+                auth=auth,
             )
         )
         return read_stream, write_stream
@@ -976,6 +1016,7 @@ class McpServerConnection:
         stack: AsyncExitStack,
         timeout: int | None,
         headers: dict[str, str] | None,
+        auth: httpx.Auth | None,
     ) -> tuple[_ReadStream, _WriteStream]:
         """
         Open a legacy SSE MCP transport.
@@ -988,6 +1029,7 @@ class McpServerConnection:
             for SDK defaults.
         :param headers: Resolved HTTP headers (may include a
             Databricks bearer token), or ``None``.
+        :param auth: Resolved AWS SigV4 signer, or None.
         :returns: A ``(read_stream, write_stream)`` tuple.
         """
         assert self.config.url is not None
@@ -999,6 +1041,7 @@ class McpServerConnection:
                 timeout=float(timeout) if timeout is not None else 5,
                 # MCP SDK default: 300s (5 min) for SSE event read.
                 sse_read_timeout=float(timeout) if timeout is not None else 300,
+                auth=auth,
             )
         )
         return read_stream, write_stream

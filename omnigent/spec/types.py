@@ -906,6 +906,14 @@ class MCPServerConfig:
         ``Authorization: Bearer <token>`` into the HTTP headers.
         Valid only on ``"http"``. Avoids hardcoding short-lived
         tokens in the YAML.
+    :param aws_profile: AWS CLI profile name (e.g. one kept fresh by
+        ``aws-azure-login``). When set, every HTTP request is signed
+        with AWS SigV4 using credentials resolved fresh from this
+        profile on each request. Valid only on ``"http"``.
+    :param aws_service: AWS service name to sign for, e.g.
+        ``"bedrock-agentcore"``. Required when ``aws_profile`` is set.
+    :param aws_region: AWS region for signing. Optional — falls back to
+        the profile's configured region when unset.
     :param command: Executable to spawn, e.g. ``"npx"``. Required
         when ``transport == "stdio"``; invalid for ``"http"``.
     :param args: Arguments to pass to *command*, e.g.
@@ -937,6 +945,15 @@ class MCPServerConfig:
     # ``Authorization`` header. Mutually usable with ``headers``:
     # explicit headers win if both set ``Authorization``.
     databricks_profile: str | None = None
+    # AWS SigV4 auth — signs every HTTP request to the MCP server with
+    # credentials from a named AWS CLI profile (e.g. one kept fresh by
+    # aws-azure-login). Mutually exclusive with databricks_profile in
+    # practice, but not enforced as such: both merge into the same
+    # transport call, and MCPServerConfig doesn't otherwise police which
+    # auth fields co-occur.
+    aws_profile: str | None = None
+    aws_service: str | None = None  # e.g. "bedrock-agentcore"; no default — require explicit
+    aws_region: str | None = None  # optional; falls back to the profile's configured region
     # Stdio-only fields.
     command: str | None = None
     args: list[str] = field(default_factory=list)
@@ -969,6 +986,8 @@ class MCPServerConfig:
             f"MCPServerConfig(name={self.name!r}, transport={self.transport!r}, "
             f"url={self.url!r}, headers={redacted_headers!r}, "
             f"databricks_profile={self.databricks_profile!r}, "
+            f"aws_profile={self.aws_profile!r}, aws_service={self.aws_service!r}, "
+            f"aws_region={self.aws_region!r}, "
             f"command={self.command!r}, args={self.args!r}, "
             f"env={redacted_env!r}, "
             f"timeout={self.timeout!r}, retry={self.retry!r})"

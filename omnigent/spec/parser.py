@@ -2336,6 +2336,26 @@ def _parse_inline_mcp_servers(
                     code=ErrorCode.INVALID_INPUT,
                 )
             databricks_profile = str(raw_profile)
+        # Optional AWS SigV4 auth — signs every request with credentials
+        # from a named AWS CLI profile (e.g. one kept fresh by
+        # aws-azure-login). Re-resolved fresh per request by
+        # SigV4SessionAuth, not cached here.
+        aws_profile: str | None = None
+        aws_service: str | None = None
+        aws_region: str | None = None
+        if isinstance(raw_auth, dict) and str(raw_auth.get("type", "")) == "sigv4":
+            raw_profile = raw_auth.get("profile")
+            raw_service = raw_auth.get("service")
+            if raw_profile is None or raw_service is None:
+                raise OmnigentError(
+                    f"Inline MCP server {name!r} auth type 'sigv4' requires "
+                    f"'profile' and 'service' fields",
+                    code=ErrorCode.INVALID_INPUT,
+                )
+            aws_profile = str(raw_profile)
+            aws_service = str(raw_service)
+            if (raw_region := raw_auth.get("region")) is not None:
+                aws_region = str(raw_region)
         # Optional per-server tool allow-list (the YAML ``tools:`` whitelist) —
         # only these tool names are exposed to the model; ``None`` exposes all.
         # Mirrors ``MCPTool.tools`` and is filtered downstream in
@@ -2361,6 +2381,9 @@ def _parse_inline_mcp_servers(
                 headers=headers,
                 env=env,
                 databricks_profile=databricks_profile,
+                aws_profile=aws_profile,
+                aws_service=aws_service,
+                aws_region=aws_region,
                 tools=tool_allowlist,
             )
         )

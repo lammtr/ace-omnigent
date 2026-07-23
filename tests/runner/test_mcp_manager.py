@@ -446,6 +446,32 @@ async def test_call_tool_connects_only_target_namespaced_server(
     assert calls == [("used", "run", {"x": 1})]
 
 
+def test_compute_server_hash_changes_with_aws_profile() -> None:
+    """
+    compute_server_hash must reflect aws_profile/aws_service/aws_region —
+    otherwise switching a running server's AWS auth profile in YAML would
+    silently fail to trigger a reconnect (the pool would keep reusing the
+    old connection, which is either still signed with the old profile's
+    identity or, if that profile's credentials expired, stuck failing).
+    """
+    base = MCPServerConfig(
+        name="sigv4-svc",
+        url="https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations",
+        aws_profile="default",
+        aws_service="bedrock-agentcore",
+        aws_region="ap-southeast-2",
+    )
+    different_profile = MCPServerConfig(
+        name="sigv4-svc",
+        url="https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/x/invocations",
+        aws_profile="other-profile",
+        aws_service="bedrock-agentcore",
+        aws_region="ap-southeast-2",
+    )
+
+    assert compute_server_hash(base) != compute_server_hash(different_profile)
+
+
 @pytest.mark.asyncio
 async def test_call_tool_against_failed_server_raises(
     patch_connection: dict[str, Any],

@@ -43,6 +43,11 @@ dependencies = [
     # bytes; pin below 15 until upstream fixes the regression (see issue #1514).
     "websockets>=10.4,<15",
     "httpx>=0.27,<1",
+    # AWS SigV4 request signing for outbound MCP client connections
+    # (omnigent/tools/aws_auth.py) and the bedrock/s3 optional-extra
+    # call sites that previously pulled these in separately.
+    "boto3>=1.30,<2",
+    "botocore>=1.30,<2",
     "ftfy>=6.0",
     # Portable zombie-aware PID liveness checks for the host daemon
     # lifecycle (omnigent/host/local_server.py).
@@ -122,11 +127,17 @@ openai-agents = []
 # and databricks_mcps servers import it.
 all = ["databricks-sdk>=0.56.0,<1"]
 # From omnigent.
-bedrock = ["boto3>=1.30,<2", "botocore>=1.30,<2"]
+# boto3/botocore are core dependencies now (see `dependencies` above); this
+# extra is kept as a no-op alias so existing `--extra bedrock` invocations
+# keep working.
+bedrock = []
 # S3-compatible artifact store (AWS S3, Cloudflare R2, MinIO, …). Selected
 # with ``OMNIGENT_ARTIFACT_URI=s3://bucket/prefix``; the store imports boto3
 # lazily, so only users of this backend need the extra.
-s3 = ["boto3>=1.30,<2", "botocore>=1.30,<2"]
+# boto3/botocore are core dependencies now (see `dependencies` above); this
+# extra is kept as a no-op alias so existing `--extra s3` invocations keep
+# working.
+s3 = []
 vertex = ["google-auth>=2.0,<3"]
 # Modal sandbox launcher (`omnigent sandbox --provider modal`). The
 # launcher module ships in the base package and imports the SDK lazily,

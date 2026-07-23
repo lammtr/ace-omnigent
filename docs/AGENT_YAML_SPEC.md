@@ -235,6 +235,39 @@ tools:
       Authorization: Bearer ${TOKEN}
 ```
 
+MCP servers behind non-static auth can declare an `auth` block instead of
+(or alongside) static `headers`:
+
+```yaml
+tools:
+  docs:
+    type: mcp
+    url: https://my-workspace.databricks.com/api/2.0/mcp
+    auth:
+      type: databricks
+      profile: oss           # ~/.databrickscfg profile
+```
+
+```yaml
+tools:
+  ace-peg:
+    type: mcp
+    url: "https://bedrock-agentcore.ap-southeast-2.amazonaws.com/runtimes/<url-encoded-runtime-arn>/invocations?qualifier=DEFAULT"
+    auth:
+      type: sigv4
+      profile: default        # AWS CLI profile, e.g. kept fresh by aws-azure-login
+      service: bedrock-agentcore
+      region: ap-southeast-2  # optional — falls back to the profile's configured region
+```
+
+`type: databricks` resolves a bearer token at connection time from
+`~/.databrickscfg`. `type: sigv4` signs every request with AWS SigV4,
+re-resolving credentials from the named AWS CLI profile on each request —
+so a connection stays valid across an out-of-band credential refresh (e.g.
+`aws-azure-login --mode cli --profile default` rerun every few hours)
+without needing the agent restarted. Both require the referenced profile to
+be kept alive by the operator; omnigent does not run the refresh itself.
+
 ### Python function tool
 
 ```yaml
